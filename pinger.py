@@ -86,7 +86,6 @@ def first_run():
     conn = connection.cursor()
     conn.execute("CREATE TABLE propagation_status (timestamp integer, src text, dst text, data integer, nack integer, timeout integer)")
     conn.execute("CREATE TABLE protocol_status (timestamp integer, node text, protocol text, data integer, nack integer, timeout integer)")
-    conn.close()
 
 #TODO: Test if DB not initialized, else do
 #first_run()
@@ -109,18 +108,10 @@ for hub in fch_testbed:
         prefix = Name(PREFIX + hub["shortname"])
         options = RegistrationOptions().setOrigin(65)
         face.registerPrefix(prefix, onInterest, onRegisterFailed, onRegisterSuccess=registration, registrationOptions=options)
-<<<<<<< HEAD
-        #time.sleep(2)
+        time.sleep(2)
         print("Begin ping")
         loop.call_soon(schedulePings, prefix)
         while loop.is_running():
             pass
-time.sleep(30)
-=======
-
-print("Begin ping")
-loop.call_later(10, schedulePings)
-time.sleep(30)
-while loop.is_running():
-    pass
->>>>>>> 6ea443584340d0bc3cb68b46a24584b68ad0dc17
+#time.sleep(30)
+conn.close()
