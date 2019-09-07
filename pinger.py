@@ -12,9 +12,6 @@ from pyndn.control_parameters import ControlParameters
 from pyndn.encoding.tlv_wire_format import TlvWireFormat
 from pyndn.node import Node
 
-
-import pandas as pd
-import numpy as np
 import types
 import signal
 
@@ -23,14 +20,10 @@ import asyncio
 
 PREFIX='/ndn/edu/ucla/%40GUEST/m.krol%40ucl.ac.uk/pinger/'
 
-#the main structure to gather stats
-df = pd.DataFrame(columns=['iter', 'src', 'dst', 'status'])
-pandasCounter = 0
 iterCounter = 1
 registeredFaces = set()
 faces = {}
 loop = ''
-
 
 
 async def shutdown(signal, loop):
@@ -43,7 +36,7 @@ async def shutdown(signal, loop):
 
     print('Closing database connections')
     #TODO to be replaced by an actual data base
-    df.to_csv('stats.csv')
+    #df.to_csv('stats.csv')
 
     loop.stop()
     print('Shutdown complete.')
@@ -96,36 +89,14 @@ def nfdRegisterPrefix(
       response.onTimeout, None, TlvWireFormat.get(), face)
 
 
-def decomposeName(name):
-    src = name.getSubName(13, 1)
-    dst = name.getSubName(6, 1)
-    seq = name[-1].toSequenceNumber()
-    return src, dst, seq
-
-
-def registerResult(name, status):
-    global pandasCounter
-    src, dst, seq = decomposeName(name)
-    #print("Name:", name, "decomposed into src:", src, "dst:", dst, "iterNumber:", seq)
-    #return
-    df.loc[pandasCounter] = [seq, src, dst, status]
-    pandasCounter += 1
-
-
 def onData(interest, data):
     print("Received data for interest:", interest.getName())
-    registerResult(interest.getName(), 0)
 
 def onTimeout(interest):
-    print("Timeoutt", interest.getName())
-    registerResult(interest.getName(), 1)
+    print("Timeout", interest.getName())
 
 def onNack(interest, nack):
     print("NACK", interest.getName(), "reason", nack.getReason())
-    registerResult(interest.getName(), 2)
-
-def test():
-    print("test")
 
 
 def schedulePings():
@@ -134,7 +105,6 @@ def schedulePings():
     list_of_pairs = [loop.call_soon(pingFace, f1, f2, iterCounter) for f1 in registeredFaces for f2 in registeredFaces if f1 != f2]
     iterCounter += 1
     loop.call_later(30, schedulePings)
-
 
 
 def pingFace(srcFace, dstPrefix, iterNumber):
@@ -207,7 +177,6 @@ signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
 for s in signals:
     loop.add_signal_handler(
         s, lambda s=s: loop.create_task(shutdown(s, loop)))
-
 
 
 loop.run_forever()
