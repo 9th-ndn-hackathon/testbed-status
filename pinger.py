@@ -1,117 +1,34 @@
-#from pyndn import Face
-from pyndn.threadsafe_face import ThreadsafeFace
-from pyndn import Name
-from pyndn import Interest
-from pyndn import Data
-from urllib.parse import urlparse
+import sqlite3
 from pyndn.security import KeyChain
-from pyndn.security import SafeBag
+from pyndn.threadsafe_face import ThreadsafeFace
+from pyndn.name import Name
 from pyndn.util import Blob
-from pyndn.forwarding_flags import ForwardingFlags
-from pyndn.control_parameters import ControlParameters
-from pyndn.encoding.tlv_wire_format import TlvWireFormat
-from pyndn.node import Node
-
-import types
-import signal
-
+from pyndn.registration_options import RegistrationOptions
+from pyndn.interest import Interest
 import json
+from urllib import request
+import sys
 import asyncio
+import os
+import time
 
-PREFIX='/ndn/edu/ucla/%40GUEST/m.krol%40ucl.ac.uk/pinger/'
-
-iterCounter = 1
-registeredFaces = set()
-faces = {}
-loop = ''
-
-
-async def shutdown(signal, loop):
-    print(f'Received exit signal {signal.name}...')
-
-    print('Removing registered prefixes')
-    for face in registeredFaces:
-        #TODO for now we register one prefix per face, so it works, but it should be changed to read the actual prefixID from a map or sth
-        faces[face].removeRegisteredPrefix(1)
-
-    print('Closing database connections')
-    #TODO to be replaced by an actual data base
-    #df.to_csv('stats.csv')
-
-    loop.stop()
-    print('Shutdown complete.')
-
-
-def nfdRegisterPrefix(
-  self, registeredPrefixId, prefix, onInterest, onRegisterFailed,
-  onRegisterSuccess, flags, commandKeyChain, commandCertificateName, face):
-    """
-    Do the work of registerPrefix to register with NFD.
-        :param int registeredPrefixId: The getNextEntryId() which registerPrefix
-      got so it could return it to the caller. If this is 0, then don't add
-  to _registeredPrefixTable (assuming it has already been done).
-    """
-    if commandKeyChain == None:
-        raise RuntimeError(
-          "registerPrefix: The command KeyChain has not been set. You must call setCommandSigningInfo.")
-    if commandCertificateName.size() == 0:
-        raise RuntimeError(
-          "registerPrefix: The command certificate name has not been set. You must call setCommandSigningInfo.")
-
-    controlParameters = ControlParameters()
-    controlParameters.setName(prefix)
-    controlParameters.setForwardingFlags(flags)
-    controlParameters.setOrigin(65)
-
-    commandInterest = Interest()
-
-    if self.isLocal():
-        commandInterest.setName(Name("/localhost/nfd/rib/register"))
-        # The interest is answered by the local host, so set a short timeout.
-        commandInterest.setInterestLifetimeMilliseconds(2000.0)
-    else:
-        commandInterest.setName(Name("/localhop/nfd/rib/register"))
-        # The host is remote, so set a longer timeout.
-        commandInterest.setInterestLifetimeMilliseconds(4000.0)
-
-    # NFD only accepts TlvWireFormat packets.
-    commandInterest.getName().append(controlParameters.wireEncode(TlvWireFormat.get()))
-    self.makeCommandInterest(
-      commandInterest, commandKeyChain, commandCertificateName,
-      TlvWireFormat.get())
-
-    # Send the registration interest.
-    response = Node._RegisterResponse(
-      prefix, onRegisterFailed, onRegisterSuccess, registeredPrefixId, self,
-      onInterest, face)
-    self.expressInterest(
-      self.getNextEntryId(), commandInterest, response.onData,
-      response.onTimeout, None, TlvWireFormat.get(), face)
-
-
-def onData(interest, data):
-    print("Received data for interest:", interest.getName())
-
-def onTimeout(interest):
-    print("Timeout", interest.getName())
-
-def onNack(interest, nack):
-    print("NACK", interest.getName(), "reason", nack.getReason())
-
+PROTOCOLS = ("udp", "tcp", "wss")
+PREFIX = ""
+valid_faces = []
+seq_num = 0
+conn = None
 
 def schedulePings():
-    global iterCounter
-
-    list_of_pairs = [loop.call_soon(pingFace, f1, f2, iterCounter) for f1 in registeredFaces for f2 in registeredFaces if f1 != f2]
-    iterCounter += 1
-    loop.call_later(30, schedulePings)
-
+    list_of_pairs = [loop.call_soon(pingFace, f1, f2, seq_num) for f1 in valid_faces for f2 in valid_faces if f1 != f2]
+    seq_num += 1
+    #loop.call_later(30, schedulePings)
 
 def pingFace(srcFace, dstPrefix, iterNumber):
     print("Will ping from", srcFace, dstPrefix, "iterNumber:", iterNumber)
 
-    face = faces[srcFace]
+    face = valid_faces[srcFace]
     name = Name(dstPrefix)
+    #name.append("ping")
     name.append(Name(srcFace))
     name.appendSequenceNumber(iterNumber)
 
@@ -119,66 +36,81 @@ def pingFace(srcFace, dstPrefix, iterNumber):
     interest = Interest(name)
 
     face.expressInterest(interest, onData, onTimeout, onNack)
+    face.processEvents()
 
+def onData(interest, data):
+    print("Data received")
+    updateStatus(interest, 0)
+
+def onTimeout(interest):
+    print("Timeout")
+    updateStatus(interest, 1)
+
+def onNack(interest, nack):
+    print("Nack")
+    updateStatus(interest, 2)
+
+def decomposeName(name):
+    src = name.getSubName(13, 1)
+    dst = name.getSubName(6, 1)
+    return src, dst
+
+def updateStatus(interest, status):
+    src, dst = decomposeName(interest.getName())
+    conn.execute("SELECT FROM testbed_status WHERE src=? AND dst=?", (src, dst))
+    if not conn.fetchone():
+        conn.execute("INSERT INTO testbed_status (?, ?, ?)", (src, dst, status))
+    else:
+        conn.execute("UPDATE testbed_status SET status=? WHERE src=? AND dst=?", (status, src, dst))
 
 def onInterest(prefix, interest, face, interestFilterId, filter):
-    global keyChain
-    print("Received an interest:", interest.getName(), "incomingFaceID",  interest.getIncomingFaceId(), "face", face, "interestFilterId", interestFilterId, "prefix", prefix)
-    data = Data(interest.getName())
-    data.setContent(Blob("Hello from NDN!"))
-    keyChain.sign(data, keyChain.getDefaultCertificateName())
+    data = interest.getName()
+    print("Incoming interest: {}".format(data))
+    data.setContent(Blob("TEST"))
+    keychain.sign(data, keychain.getDefaultCertificateName())
     try:
         face.putData(data)
-    except Exception as ex:
-        print("Error in transport.send: %s", str(ex))
+    except Exception as exception:
+        print("Error in transport.send: %s", str(exception))
 
 def onRegisterFailed(prefix):
-    print("Register failed for prefix " + prefix.toUri())
+    print("Registration failed for prefix {}".format(prefix.toUri()))
 
-def onRegisterSuccess(prefix, prefixID):
-    print("Register succeded for prefix " + prefix.toUri(), "prefixID:", prefixID)
-    registeredFaces.add(prefix)
+def registration(prefix, prefixID):
+    print("Registration succeeded for prefix {}".format(prefix.toUri()))
+    valid_faces.append(prefix)
 
+def first_run():
+    connection = sqlite3.connect("status.db")
+    print("connection")
+    conn = connection.cursor()
+    conn.execute("CREATE TABLE testbed_status (src text, dst text, status integer)")
+    conn.execute("INSERT INTO testbed_status VALUES ('worm', 'worm2', 0)")
+    conn.close()
+    #conn.execute("SELECT * FROM testbed_status")
+    #print(conn.fetchone())
 
-#load and parse the file with testbed nodes that support fch
-hubJson = json.load(open('hubs.json', encoding="utf-8"))
-hubList = [ value for value in hubJson.values() if value['fch-enabled'] != False ]
+#TODO: Test if DB not initialized, else do
+first_run()
 
-#set up a keyChain
-keyChain = KeyChain()
-print("Default identity:", keyChain.getDefaultCertificateName())
-
-#main async event loop
+testbed_json = json.load(open(request.urlretrieve("http://ndndemo.arl.wustl.edu/testbed-nodes.json")[0], "r"))
+fch_testbed = [ value for value in testbed_json.values() if value['fch-enabled'] != False ]
+#Initialize keychain
+keychain = KeyChain()
 loop = asyncio.get_event_loop()
+for hub in fch_testbed:
+    print("Adding faces to hub: {}".format(hub["name"]))
+    face_base = hub["site"].strip("http").replace(":80/",":6363")
+    print(face_base)
+    for protocol in PROTOCOLS:
+        face = ThreadsafeFace(loop, "{}{}".format(protocol, hub))
+        face.setCommandSigningInfo(keychain, keychain.getDefaultCertificateName())
+        prefix = Name(PREFIX + hub["shortname"])
+        options = RegistrationOptions().setOrigin(65)
+        face.registerPrefix(prefix, onInterest, onRegisterFailed, onRegisterSuccess=registration, registrationOptions=options)
 
-for hub in hubList:
-    url = urlparse(hub['site'])
-    if(hub['shortname'] not in ['UCLA', 'LIP6']):
-        continue
-
-    print("Registering", hub['shortname'], "hostname:", url.hostname)
-    face = ThreadsafeFace(loop, url.hostname)
-    face.setCommandSigningInfo(keyChain, keyChain.getDefaultCertificateName())
-    facePrefix = Name(PREFIX + hub['shortname'])
-
-    print("Face:", facePrefix)
-    #shadowing to replace the default PyNDN function that does not support passing options
-    # setOrigin(65) must be included to propagate the prefix to other nodes
-    face._node._nfdRegisterPrefix = types.MethodType(nfdRegisterPrefix, face._node)
-    face.registerPrefix(facePrefix, onInterest, onRegisterFailed, onRegisterSuccess=onRegisterSuccess)
-    faces[facePrefix] = face
-
-#schedule pings later, so that prefixes have some time to register and propagate
-print("Starting pinging")
+print("Begin ping")
 loop.call_later(30, schedulePings)
-
-#signal handling for clean shutdown
-signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
-for s in signals:
-    loop.add_signal_handler(
-        s, lambda s=s: loop.create_task(shutdown(s, loop)))
-
-
-loop.run_forever()
-
-print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~FINISHING~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+time.sleep(30)
+while loop.is_running():
+    pass
