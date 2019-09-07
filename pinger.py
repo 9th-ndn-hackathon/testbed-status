@@ -1,19 +1,18 @@
-import sqlite3
+from pyndn import Name, Interest, Data
+from pyndn.registration_options import RegistrationOptions
 from pyndn.security import KeyChain
 from pyndn.threadsafe_face import ThreadsafeFace
-from pyndn.name import Name
 from pyndn.util import Blob
-from pyndn.registration_options import RegistrationOptions
-from pyndn.interest import Interest
-import json
 from urllib import request
-import sys
 import asyncio
+import json
 import os
+import sqlite3
+import sys
 import time
 
 PROTOCOLS = ("udp", "tcp", "wss")
-PREFIX = ""
+PREFIX = "/ndn/edu/ucla/%40GUEST/davidepesa%40gmail.com/pinger/"
 valid_faces = []
 seq_num = 0
 conn = None
@@ -110,9 +109,18 @@ for hub in fch_testbed:
         prefix = Name(PREFIX + hub["shortname"])
         options = RegistrationOptions().setOrigin(65)
         face.registerPrefix(prefix, onInterest, onRegisterFailed, onRegisterSuccess=registration, registrationOptions=options)
+<<<<<<< HEAD
         #time.sleep(2)
         print("Begin ping")
         loop.call_soon(schedulePings, prefix)
         while loop.is_running():
             pass
 time.sleep(30)
+=======
+
+print("Begin ping")
+loop.call_later(10, schedulePings)
+time.sleep(30)
+while loop.is_running():
+    pass
+>>>>>>> 6ea443584340d0bc3cb68b46a24584b68ad0dc17
